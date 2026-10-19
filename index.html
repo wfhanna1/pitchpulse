@@ -283,7 +283,8 @@ function MatchFeedView({ matches, loading, onSelectMatch, filterLiveOnly, setFil
 
 // ESPN gives event locations (0-100) from the acting team's own attacking direction.
 // Home attacks right on this pitch; away positions are rotated 180 degrees.
-function latestBallEvent(commentaryList, match) {
+function recentBallEvents(commentaryList, match, count) {
+  const found = [];
   for (const c of commentaryList) {
     const p = c.play;
     if (!p || typeof p.fieldPositionX !== 'number' || typeof p.fieldPositionY !== 'number') continue;
@@ -293,20 +294,25 @@ function latestBallEvent(commentaryList, match) {
     const fx = (v) => Math.min(98, Math.max(2, away ? 100 - v : v));
     const fy = (v) => Math.min(95, Math.max(5, away ? 100 - v : v));
     const hasEnd = typeof p.fieldPosition2X === 'number' && typeof p.fieldPosition2Y === 'number' && p.fieldPosition2X > 0;
-    return {
+    found.push({
       x: fx(p.fieldPositionX), y: fy(p.fieldPositionY),
       x2: hasEnd ? fx(p.fieldPosition2X) : null, y2: hasEnd ? fy(p.fieldPosition2Y) : null,
       clock: c.clock?.displayValue || '',
       text: p.shortText || c.text
-    };
+    });
+    if (found.length === count) break;
   }
-  return null;
+  return found;
 }
 
 function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList, matchSummary,
   standings, pollVotes, userVoted, handleVote, totalVotes }) {
   const pct = (n) => (n / totalVotes) * 100;
-  const ball = latestBallEvent(commentaryList, match);
+  const recent = recentBallEvents(commentaryList, match, 5);
+  const ball = recent[0] || null;
+  const trail = recent.slice(1);
+  const minuteOf = (t) => parseInt(String(t || '').replace(/[^\d+]/g, '').split('+')[0], 10);
+  const ageMin = match.status === 'LIVE' && ball ? minuteOf(match.minute) - minuteOf(ball.clock) : null;
   const pollBar = (heightClass) => h('div', { className: `w-full ${heightClass} bg-slate-800 rounded-full overflow-hidden flex` },
     h('div', { className: 'bg-emerald-500 transition-all duration-500', style: { width: `${pct(pollVotes.home)}%` } }),
     h('div', { className: 'bg-slate-500 transition-all duration-500', style: { width: `${pct(pollVotes.draw)}%` } }),
@@ -411,17 +417,22 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
             ball && ball.x2 !== null && h('svg', { className: 'absolute inset-0 w-full h-full pointer-events-none z-10', viewBox: '0 0 100 100', preserveAspectRatio: 'none' },
               h('line', { x1: ball.x, y1: ball.y, x2: ball.x2, y2: ball.y2, stroke: '#ffffff', strokeWidth: '2', strokeDasharray: '4 4', opacity: '0.7', vectorEffect: 'non-scaling-stroke' })
             ),
+            trail.map((t, i) => h('div', {
+              key: i,
+              className: 'absolute z-10 w-2 h-2 -ml-1 -mt-1 rounded-full bg-white',
+              style: { left: `${t.x}%`, top: `${t.y}%`, opacity: 0.5 - i * 0.1 }
+            })),
             ball && h('div', {
               className: 'absolute z-10 w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full bg-white border-2 border-black shadow-lg transition-all duration-500 ease-out',
               style: { left: `${ball.x}%`, top: `${ball.y}%` }
             }),
             h('div', { className: 'absolute top-10 inset-x-4 z-20 flex justify-center' },
               h('div', { className: 'bg-emerald-950/90 text-emerald-200 px-3 py-1 rounded-full shadow-lg border border-emerald-500/50 text-[11px] font-semibold tracking-wide text-center max-w-[280px] truncate' },
-                ball ? `${ball.clock ? ball.clock + ' ' : ''}${ball.text}` : (matchSummary ? 'No located match events yet' : 'Loading match events...')
+                ball ? `${ball.clock ? ball.clock + ' ' : ''}${ball.text}${ageMin > 0 ? ` (${ageMin} min ago)` : ''}` : (matchSummary ? 'No located match events yet' : 'Loading match events...')
               )
             ),
             h('div', { className: 'relative z-20 flex justify-center items-center text-[10px] text-emerald-200 bg-black/40 px-3 py-1 rounded-lg backdrop-blur-sm' },
-              h('span', {}, 'Ball marks where the latest recorded event happened')
+              h('span', {}, 'Ball = latest located event; faint dots = earlier ones')
             )
           )
         ),
