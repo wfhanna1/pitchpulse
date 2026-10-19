@@ -48,6 +48,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [standings, setStandings] = useState([]);
   const [commentaryList, setCommentaryList] = useState([]);
+  const [matchSummary, setMatchSummary] = useState(null);
   const [pollVotes, setPollVotes] = useState({ home: 1840, draw: 920, away: 1150 });
   const [userVoted, setUserVoted] = useState(null);
   const [ballPos, setBallPos] = useState({ x: 180, y: 90 });
@@ -102,10 +103,12 @@ function App() {
     if (!selectedMatch) return;
     setStandings([]);
     setCommentaryList([]);
+    setMatchSummary(null);
     async function fetchDetails() {
       try {
         const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${selectedMatch.id}`);
         const data = await res.json();
+        setMatchSummary({ rosters: data.rosters || [], teams: data.boxscore?.teams || [] });
         if (data.commentary && data.commentary.length > 0) {
           setCommentaryList(data.commentary.slice().reverse().map(c => ({ clock: c.time, text: c.text })));
         } else {
@@ -204,7 +207,7 @@ function App() {
       match: selectedMatch,
       onBack: () => setSelectedMatch(null),
       matchTab, setMatchTab,
-      commentaryList, standings, pollVotes, userVoted, handleVote, totalVotes, ballPos,
+      commentaryList, matchSummary, standings, pollVotes, userVoted, handleVote, totalVotes, ballPos,
       currentActionText
     }) : currentNav === 'explore' ? h(ExploreView, { onSelectLeague: (lg) => { setSelectedLeague(lg); setCurrentNav('matches'); } }) : h(MatchFeedView, { matches: filteredMatches, loading, onSelectMatch: setSelectedMatch, filterLiveOnly, setFilterLiveOnly }),
     h('nav', { className: 'bg-[#121826] border-t border-slate-800 py-2 px-6 flex justify-around items-center sticky bottom-0 z-50' },
@@ -297,7 +300,7 @@ function MatchFeedView({ matches, loading, onSelectMatch, filterLiveOnly, setFil
   );
 }
 
-function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
+function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList, matchSummary,
   standings, pollVotes, userVoted, handleVote, totalVotes, ballPos, currentActionText }) {
   const pct = (n) => (n / totalVotes) * 100;
   const pollBar = (heightClass) => h('div', { className: `w-full ${heightClass} bg-slate-800 rounded-full overflow-hidden flex` },
@@ -437,8 +440,8 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
           )
         )
       ),
-      matchTab === 'lineup' && h('div', { className: 'text-center py-12 text-slate-400 text-xs' }, 'Lineups update live.'),
-      matchTab === 'stats' && h('div', { className: 'text-center py-12 text-slate-400 text-xs' }, 'Statistics update live during play.'),
+      matchTab === 'lineup' && h(LineupTab, { summary: matchSummary }),
+      matchTab === 'stats' && h(StatsTab, { summary: matchSummary, match }),
       matchTab === 'table' && h('div', { className: 'space-y-1.5' },
         h('h3', { className: 'font-bold text-xs text-slate-300 mb-2' }, 'League Standings'),
         standings.length === 0 ? h('p', { className: 'text-xs text-slate-400 text-center py-8' }, 'Standings not available.') :
@@ -456,6 +459,88 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
         )
       )
     )
+  );
+}
+
+function EmptyNote({ children }) {
+  return h('div', { className: 'text-center py-12 text-slate-400 text-xs' }, children);
+}
+
+function LineupTab({ summary }) {
+  if (!summary) return h(EmptyNote, {}, 'Loading lineups...');
+  const rosters = summary.rosters.filter(r => (r.roster || []).length > 0);
+  if (rosters.length === 0) return h(EmptyNote, {}, 'Lineups are not available yet.');
+
+  const playerRow = (p) => h('div', { key: p.athlete?.id || p.jersey, className: 'flex items-center space-x-2 py-1 text-xs' },
+    h('span', { className: 'w-5 text-right text-slate-500 text-[11px]' }, p.jersey || ''),
+    h('span', { className: 'flex-1 text-slate-200' }, p.athlete?.displayName || 'Unknown'),
+    h('span', { className: 'text-[10px] text-slate-500' }, p.position?.abbreviation || '')
+  );
+
+  return h('div', { className: 'space-y-4' },
+    rosters.map(r => {
+      const starters = r.roster.filter(p => p.starter).sort((a, b) => (a.formationPlace || 99) - (b.formationPlace || 99));
+      const subs = r.roster.filter(p => !p.starter);
+      return h('div', { key: r.homeAway, className: 'bg-[#121826] rounded-2xl p-3 border border-slate-800' },
+        h('div', { className: 'flex justify-between items-center mb-2' },
+          h('span', { className: 'font-bold text-sm text-slate-100' }, r.team?.displayName || r.homeAway),
+          r.formation && h('span', { className: 'text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full' }, r.formation)
+        ),
+        h('p', { className: 'text-[10px] uppercase tracking-wide text-slate-500 mb-1' }, 'Starting XI'),
+        starters.map(playerRow),
+        subs.length > 0 && h('p', { className: 'text-[10px] uppercase tracking-wide text-slate-500 mt-3 mb-1' }, 'Substitutes'),
+        subs.map(playerRow)
+      );
+    })
+  );
+}
+
+const STAT_ROWS = [
+  { key: 'possessionPct', label: 'Possession', suffix: '%' },
+  { key: 'totalShots', label: 'Shots' },
+  { key: 'shotsOnTarget', label: 'Shots on target' },
+  { key: 'wonCorners', label: 'Corners' },
+  { key: 'foulsCommitted', label: 'Fouls' },
+  { key: 'offsides', label: 'Offsides' },
+  { key: 'yellowCards', label: 'Yellow cards' },
+  { key: 'redCards', label: 'Red cards' },
+  { key: 'saves', label: 'Saves' },
+  { key: 'totalPasses', label: 'Passes' },
+  { key: 'accuratePasses', label: 'Accurate passes' },
+  { key: 'totalTackles', label: 'Tackles' },
+  { key: 'interceptions', label: 'Interceptions' },
+  { key: 'totalClearance', label: 'Clearances' }
+];
+
+function StatsTab({ summary, match }) {
+  if (!summary) return h(EmptyNote, {}, 'Loading statistics...');
+  const home = summary.teams.find(t => t.homeAway === 'home');
+  const away = summary.teams.find(t => t.homeAway === 'away');
+  const val = (team, key) => parseFloat(team?.statistics?.find(s => s.name === key)?.displayValue);
+  const rows = STAT_ROWS
+    .map(r => ({ ...r, hv: val(home, r.key), av: val(away, r.key) }))
+    .filter(r => !isNaN(r.hv) && !isNaN(r.av));
+  if (rows.length === 0) return h(EmptyNote, {}, 'Statistics are not available yet.');
+
+  return h('div', { className: 'bg-[#121826] rounded-2xl p-3 border border-slate-800 space-y-3' },
+    h('div', { className: 'flex justify-between text-[11px] font-bold text-slate-300' },
+      h('span', {}, match.homeTeam), h('span', {}, match.awayTeam)),
+    rows.map(r => {
+      const total = r.hv + r.av;
+      const hp = total > 0 ? (r.hv / total) * 100 : 50;
+      const fmt = (v) => `${Number.isInteger(v) ? v : v.toFixed(1)}${r.suffix || ''}`;
+      return h('div', { key: r.key, className: 'space-y-1' },
+        h('div', { className: 'flex justify-between items-center text-xs' },
+          h('span', { className: `font-bold ${r.hv > r.av ? 'text-emerald-400' : 'text-slate-300'}` }, fmt(r.hv)),
+          h('span', { className: 'text-[11px] text-slate-400' }, r.label),
+          h('span', { className: `font-bold ${r.av > r.hv ? 'text-emerald-400' : 'text-slate-300'}` }, fmt(r.av))
+        ),
+        h('div', { className: 'flex h-1.5 rounded-full overflow-hidden bg-slate-800' },
+          h('div', { className: 'bg-emerald-500', style: { width: `${hp}%` } }),
+          h('div', { className: 'bg-blue-500', style: { width: `${100 - hp}%` } })
+        )
+      );
+    })
   );
 }
 
