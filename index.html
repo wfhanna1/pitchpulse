@@ -51,8 +51,6 @@ function App() {
   const [matchSummary, setMatchSummary] = useState(null);
   const [pollVotes, setPollVotes] = useState({ home: 1840, draw: 920, away: 1150 });
   const [userVoted, setUserVoted] = useState(null);
-  const [ballPos, setBallPos] = useState({ x: 180, y: 90 });
-  const [currentActionText, setCurrentActionText] = useState("Match underway...");
 
   const leaguesList = ['All', 'Premier League', 'UEFA Champions League', 'La Liga', 'Serie A', 'Bundesliga', 'MLS', 'Ligue 1'];
 
@@ -108,42 +106,28 @@ function App() {
     setStandings([]);
     setCommentaryList([]);
     setMatchSummary(null);
+    let first = true;
     async function fetchDetails() {
       try {
         const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${selectedMatch.id}`);
         const data = await res.json();
         setMatchSummary({ rosters: data.rosters || [], teams: data.boxscore?.teams || [] });
-        setCommentaryList((data.commentary || []).slice().reverse().map(c => ({ clock: c.time, text: c.text })));
-        if (selectedMatch.leagueId) {
+        setCommentaryList((data.commentary || []).slice().reverse().map(c => ({ clock: c.time, text: c.text, play: c.play })));
+        if (first && selectedMatch.leagueId) {
           const standRes = await fetch(`https://site.api.espn.com/apis/v2/sports/soccer/${selectedMatch.leagueId}/standings`);
           const standData = await standRes.json();
           setStandings(standData.children?.[0]?.standings?.entries || []);
         }
       } catch (e) {
         console.error('Error fetching details:', e);
-        setMatchSummary({ rosters: [], teams: [] });
+        if (first) setMatchSummary({ rosters: [], teams: [] });
       }
+      first = false;
     }
     fetchDetails();
-  }, [selectedMatch]);
-
-  useEffect(() => {
-    if (!selectedMatch) return;
-    const actions = [
-      { text: `Passing sequence initiated by ${selectedMatch.homeTeam}`, x: 140, y: 85 },
-      { text: `Quick through-ball into open space!`, x: 260, y: 60 },
-      { text: `Shot on goal taken from inside the box!`, x: 310, y: 85 },
-      { text: `Defensive interception and clearance`, x: 190, y: 100 },
-      { text: `Free kick awarded near the sideline`, x: 230, y: 30 }
-    ];
-    let idx = 0;
-    const physicsInterval = setInterval(() => {
-      const action = actions[idx % actions.length];
-      setBallPos({ x: action.x, y: action.y });
-      setCurrentActionText(action.text);
-      idx++;
-    }, 4000);
-    return () => clearInterval(physicsInterval);
+    // live matches: keep events (and the ball) fresh while the match is open
+    const interval = selectedMatch.status === 'LIVE' ? setInterval(fetchDetails, 15000) : null;
+    return () => { if (interval) clearInterval(interval); };
   }, [selectedMatch]);
 
   const handleVote = (teamKey) => {
@@ -202,11 +186,10 @@ function App() {
       )
     ),
     selectedMatch ? h(MatchCenterView, {
-      match: selectedMatch,
+      match: (selectedMatch && matches.find(m => m.id === selectedMatch.id)) || selectedMatch,
       onBack: () => setSelectedMatch(null),
       matchTab, setMatchTab,
-      commentaryList, matchSummary, standings, pollVotes, userVoted, handleVote, totalVotes, ballPos,
-      currentActionText
+      commentaryList, matchSummary, standings, pollVotes, userVoted, handleVote, totalVotes
     }) : currentNav === 'explore' ? h(ExploreView, { onSelectLeague: (lg) => { setSelectedLeague(lg); setCurrentNav('matches'); } }) : h(MatchFeedView, { matches: filteredMatches, loading, onSelectMatch: setSelectedMatch, filterLiveOnly, setFilterLiveOnly }),
     h('nav', { className: 'bg-[#121826] border-t border-slate-800 py-2 px-6 flex justify-around items-center sticky bottom-0 z-50' },
       h('button', { onClick: () => { setCurrentNav('matches'); setSelectedMatch(null); },
@@ -298,9 +281,32 @@ function MatchFeedView({ matches, loading, onSelectMatch, filterLiveOnly, setFil
   );
 }
 
+// ESPN gives event locations (0-100) from the acting team's own attacking direction.
+// Home attacks right on this pitch; away positions are rotated 180 degrees.
+function latestBallEvent(commentaryList, match) {
+  for (const c of commentaryList) {
+    const p = c.play;
+    if (!p || typeof p.fieldPositionX !== 'number' || typeof p.fieldPositionY !== 'number') continue;
+    const teamName = p.team?.displayName;
+    if (teamName !== match.homeTeam && teamName !== match.awayTeam) continue;
+    const away = teamName === match.awayTeam;
+    const fx = (v) => Math.min(98, Math.max(2, away ? 100 - v : v));
+    const fy = (v) => Math.min(95, Math.max(5, away ? 100 - v : v));
+    const hasEnd = typeof p.fieldPosition2X === 'number' && typeof p.fieldPosition2Y === 'number' && p.fieldPosition2X > 0;
+    return {
+      x: fx(p.fieldPositionX), y: fy(p.fieldPositionY),
+      x2: hasEnd ? fx(p.fieldPosition2X) : null, y2: hasEnd ? fy(p.fieldPosition2Y) : null,
+      clock: c.clock?.displayValue || '',
+      text: p.shortText || c.text
+    };
+  }
+  return null;
+}
+
 function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList, matchSummary,
-  standings, pollVotes, userVoted, handleVote, totalVotes, ballPos, currentActionText }) {
+  standings, pollVotes, userVoted, handleVote, totalVotes }) {
   const pct = (n) => (n / totalVotes) * 100;
+  const ball = latestBallEvent(commentaryList, match);
   const pollBar = (heightClass) => h('div', { className: `w-full ${heightClass} bg-slate-800 rounded-full overflow-hidden flex` },
     h('div', { className: 'bg-emerald-500 transition-all duration-500', style: { width: `${pct(pollVotes.home)}%` } }),
     h('div', { className: 'bg-slate-500 transition-all duration-500', style: { width: `${pct(pollVotes.draw)}%` } }),
@@ -402,25 +408,20 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
               h('div', { className: 'bg-black/40 p-1.5 rounded-lg border border-white/20' },
                 h(Icon, { name: 'chevron-up', className: 'w-3.5 h-3.5' }))
             ),
-            h('svg', { className: 'absolute inset-0 w-full h-full pointer-events-none z-10' },
-              h('path', { d: 'M 100 80 Q 200 40 310 80', fill: 'none', stroke: '#ffffff', strokeWidth: '2', strokeDasharray: '4 4', opacity: '0.6' }),
-              h('circle', {
-                cx: ballPos.x,
-                cy: ballPos.y,
-                r: '8',
-                fill: '#ffffff',
-                stroke: '#000000',
-                strokeWidth: '1.5',
-                className: 'transition-all duration-1000 ease-in-out shadow-lg'
-              })
+            ball && ball.x2 !== null && h('svg', { className: 'absolute inset-0 w-full h-full pointer-events-none z-10', viewBox: '0 0 100 100', preserveAspectRatio: 'none' },
+              h('line', { x1: ball.x, y1: ball.y, x2: ball.x2, y2: ball.y2, stroke: '#ffffff', strokeWidth: '2', strokeDasharray: '4 4', opacity: '0.7', vectorEffect: 'non-scaling-stroke' })
             ),
+            ball && h('div', {
+              className: 'absolute z-10 w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full bg-white border-2 border-black shadow-lg transition-all duration-1000 ease-in-out',
+              style: { left: `${ball.x}%`, top: `${ball.y}%` }
+            }),
             h('div', { className: 'absolute top-10 inset-x-4 z-20 flex justify-center' },
               h('div', { className: 'bg-emerald-950/90 text-emerald-200 px-3 py-1 rounded-full shadow-lg border border-emerald-500/50 text-[11px] font-semibold tracking-wide text-center max-w-[280px] truncate' },
-                currentActionText
+                ball ? `${ball.clock ? ball.clock + ' ' : ''}${ball.text}` : (matchSummary ? 'No located match events yet' : 'Loading match events...')
               )
             ),
             h('div', { className: 'relative z-20 flex justify-center items-center text-[10px] text-emerald-200 bg-black/40 px-3 py-1 rounded-lg backdrop-blur-sm' },
-              h('span', {}, 'Illustration only, not live match data')
+              h('span', {}, 'Ball marks where the latest recorded event happened')
             )
           )
         ),
