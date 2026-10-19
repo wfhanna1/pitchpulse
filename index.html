@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PitchPulse - Live Soccer Stats</title>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@0.263.1"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f8fafc; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #0b0f19; }
+::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+</style>
+</head>
+<body class="bg-[#0b0f19] text-slate-100 min-h-screen">
+<div id="root"></div>
+<script>
+const { useState, useEffect, createElement: h } = React;
+
+function Icon({ name, className = "w-5 h-5", color }) {
+  useEffect(() => { lucide.createIcons(); }, [name]);
+  return h('i', { 'data-lucide': name, className, style: { color } });
+}
+
+function App() {
+  const [currentNav, setCurrentNav] = useState('matches');
+  const [selectedMatch, setSelectedMatch] = useState(null);
+  const [matchTab, setMatchTab] = useState('commentary');
+  const [matches, setMatches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterLiveOnly, setFilterLiveOnly] = useState(true);
+  const [selectedLeague, setSelectedLeague] = useState('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [standings, setStandings] = useState([]);
+  const [commentaryList, setCommentaryList] = useState([]);
+  const [pollVotes, setPollVotes] = useState({ home: 1840, draw: 920, away: 1150 });
+  const [userVoted, setUserVoted] = useState(null);
+  const [ballPos, setBallPos] = useState({ x: 180, y: 90 });
+  const [currentActionText, setCurrentActionText] = useState("Match underway...");
+
+  const leaguesList = ['All', 'Premier League', 'UEFA Champions League', 'La Liga', 'Serie A', 'Bundesliga', 'MLS', 'Ligue 1'];
+
+  useEffect(() => {
+    async function fetchScores() {
+      setLoading(true);
+      try {
+        const todayStr = new Date().toISOString().slice(0,10).replace(/-/g,'');
+        const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates=${todayStr}`);
+        const data = await res.json();
+        const parsedMatches = (data.events || []).map(ev => {
+          const comp = ev.competitions[0];
+          const home = comp.competitors.find(c => c.homeAway === 'home');
+          const away = comp.competitors.find(c => c.homeAway === 'away');
+          return {
+            id: ev.id,
+            league: comp.league?.name || 'Soccer Match',
+            leagueId: comp.league?.id || 'all',
+            status: ev.status.type.state === 'in' ? 'LIVE' : (ev.status.type.completed ? 'FT' : 'NS'),
+            minute: ev.status.displayClock || ev.status.type.detail,
+            homeTeam: home.team.displayName,
+            homeLogo: home.team.logo,
+            homeScore: home.score || '0',
+            homeId: home.team.id,
+            awayTeam: away.team.displayName,
+            awayLogo: away.team.logo,
+            awayScore: away.score || '0',
+            awayId: away.team.id,
+            venue: comp.venue?.fullName || 'Stadium',
+            broadcast: comp.broadcasts?.[0]?.names?.[0] || 'ESPN+'
+          };
+        });
+        setMatches(parsedMatches);
+      } catch (e) {
+        console.error('Error fetching scores:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchScores();
+    const interval = setInterval(fetchScores, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedMatch) return;
+    async function fetchDetails() {
+      try {
+        const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${selectedMatch.id}`);
+        const data = await res.json();
+        if (data.plays && data.plays.length > 0) {
+          setCommentaryList(data.plays);
+        } else {
+          setCommentaryList([
+            { clock: { displayValue: '1st | 14\'' }, text: `${selectedMatch.homeTeam} player executes a clean short pass in midfield.` },
+            { clock: { displayValue: '1st | 31\'' }, text: `Shot on target! Forward fires a powerful strike forcing a diving save.` },
+            { clock: { displayValue: '1st | 44\'' }, text: `Free kick awarded in the attacking third after a tactical foul.` }
+          ]);
+        }
+        if (selectedMatch.leagueId) {
+          const standRes = await fetch(`https://site.api.espn.com/apis/v2/sports/soccer/${selectedMatch.leagueId}/standings`);
+          const standData = await standRes.json();
+          if (standData.standings) {
+            setStandings(standData.standings[0]?.entries || []);
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching details:', e);
+      }
+    }
+    fetchDetails();
+  }, [selectedMatch]);
+
+  useEffect(() => {
+    if (!selectedMatch) return;
+    const actions = [
+      { text: `Passing sequence initiated by ${selectedMatch.homeTeam}`, x: 140, y: 85 },
+      { text: `Quick through-ball into open space!`, x: 260, y: 60 },
+      { text: `Shot on goal taken from inside the box!`, x: 310, y: 85 },
+      { text: `Defensive interception and clearance`, x: 190, y: 100 },
+      { text: `Free kick awarded near the sideline`, x: 230, y: 30 }
+    ];
+    let idx = 0;
+    const physicsInterval = setInterval(() => {
+      const action = actions[idx % actions.length];
+      setBallPos({ x: action.x, y: action.y });
+      setCurrentActionText(action.text);
+      idx++;
+    }, 4000);
+    return () => clearInterval(physicsInterval);
+  }, [selectedMatch]);
+
+  const handleVote = (teamKey) => {
+    if (userVoted) return;
+    setPollVotes(prev => ({ ...prev, [teamKey]: prev[teamKey] + 1 }));
+    setUserVoted(teamKey);
+  };
+  const totalVotes = pollVotes.home + pollVotes.draw + pollVotes.away;
+
+  const filteredMatches = matches.filter(m => {
+    if (filterLiveOnly && m.status !== 'LIVE') return false;
+    if (selectedLeague !== 'All' && !m.league.toLowerCase().includes(selectedLeague.toLowerCase())) return false;
+    if (searchQuery && !m.homeTeam.toLowerCase().includes(searchQuery.toLowerCase()) && !m.awayTeam.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return true;
+  });
+
+  return h('div', { className: 'max-w-md mx-auto min-h-screen bg-[#0b0f19] flex flex-col shadow-2xl relative border-x border-slate-800' },
+    h('header', { className: 'bg-[#121826] sticky top-0 z-50 px-4 py-3 border-b border-slate-800 flex items-center justify-between' },
+      h('div', { className: 'flex items-center space-x-2' },
+        h('div', { className: 'w-7 h-7 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950 text-base' }, 'P'),
+        h('span', { className: 'font-bold text-base text-slate-100 tracking-tight' }, 'PitchPulse')
+      ),
+      h('div', { className: 'flex items-center space-x-2' },
+        h('button', {
+          onClick: () => setFilterLiveOnly(!filterLiveOnly),
+          className: `px-3 py-1 rounded-full text-xs font-semibold transition-all flex items-center space-x-1 ${filterLiveOnly ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`
+        },
+          h('span', { className: `w-2 h-2 rounded-full ${filterLiveOnly ? 'bg-slate-950 animate-pulse' : 'bg-emerald-500'}` }),
+          h('span', {}, 'Live Only')
+        ),
+        h('button', { onClick: () => window.location.reload(), className: 'p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300' },
+          h(Icon, { name: 'refresh-cw', className: 'w-4 h-4' })
+        )
+      )
+    ),
+    currentNav === 'matches' && !selectedMatch && h('div', { className: 'px-4 py-2 bg-[#121826]/50 border-b border-slate-800 space-y-2' },
+      h('div', { className: 'relative' },
+        h('span', { className: 'absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400' }, h(Icon, { name: 'search', className: 'w-4 h-4' })),
+        h('input', {
+          type: 'text',
+          placeholder: 'Search team...',
+          value: searchQuery,
+          onChange: e => setSearchQuery(e.target.value),
+          className: 'w-full bg-[#1e293b] text-slate-200 pl-10 pr-4 py-1.5 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 border border-slate-700/50'
+        })
+      ),
+      h('div', { className: 'flex space-x-2 overflow-x-auto pb-1 pt-1 scrollbar-none' },
+        leaguesList.map(lg =>
+          h('button', {
+            key: lg,
+            onClick: () => setSelectedLeague(lg),
+            className: `px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${selectedLeague === lg ? 'bg-emerald-500 text-slate-950 font-bold' : 'bg-[#1e293b] text-slate-300 hover:bg-slate-700'}`
+          }, lg)
+        )
+      )
+    ),
+    selectedMatch ? h(MatchCenterView, {
+      match: selectedMatch,
+      onBack: () => setSelectedMatch(null),
+      matchTab, setMatchTab,
+      commentaryList, standings, pollVotes, userVoted, handleVote, totalVotes, ballPos,
+      currentActionText
+    }) : currentNav === 'explore' ? h(ExploreView, { onSelectLeague: (lg) => { setSelectedLeague(lg); setCurrentNav('matches'); } }) : h(MatchFeedView, { matches: filteredMatches, loading, onSelectMatch: setSelectedMatch, filterLiveOnly, setFilterLiveOnly }),
+    h('nav', { className: 'bg-[#121826] border-t border-slate-800 py-2 px-6 flex justify-around items-center sticky bottom-0 z-50' },
+      h('button', { onClick: () => { setCurrentNav('matches'); setSelectedMatch(null); },
+        className: `flex flex-col items-center ${currentNav === 'matches' && !selectedMatch ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'}` },
+        h(Icon, { name: 'trophy', className: 'w-5 h-5' }),
+        h('span', { className: 'text-[10px] mt-1 font-medium' }, 'Matches')
+      ),
+      h('button', { onClick: () => { setCurrentNav('explore'); setSelectedMatch(null); },
+        className: `flex flex-col items-center ${currentNav === 'explore' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'}` },
+        h(Icon, { name: 'compass', className: 'w-5 h-5' }),
+        h('span', { className: 'text-[10px] mt-1 font-medium' }, 'Explore')
+      )
+    )
+  );
+}
+
+function ExploreView({ onSelectLeague }) {
+  const popularLeagues = [
+    { name: 'Premier League', country: 'England', icon: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+    { name: 'UEFA Champions League', country: 'Europe', icon: '🏆' },
+    { name: 'La Liga', country: 'Spain', icon: '🇪🇸' },
+    { name: 'Serie A', country: 'Italy', icon: '🇮🇹' },
+    { name: 'Bundesliga', country: 'Germany', icon: '🇩🇪' },
+    { name: 'MLS', country: 'USA', icon: '🇺🇸' },
+    { name: 'Ligue 1', country: 'France', icon: '🇫🇷' }
+  ];
+  return h('div', { className: 'flex-1 p-4 space-y-4 pb-20' },
+    h('h2', { className: 'font-bold text-base text-slate-100 mb-2' }, 'Explore Competitions'),
+    h('div', { className: 'space-y-2' },
+      popularLeagues.map((lg, idx) =>
+        h('div', {
+          key: idx,
+          onClick: () => onSelectLeague(lg.name),
+          className: 'bg-[#1e293b]/90 hover:bg-[#1e293b] border border-slate-700/60 rounded-2xl p-4 cursor-pointer flex items-center justify-between transition-all'
+        },
+          h('div', { className: 'flex items-center space-x-3' },
+            h('span', { className: 'text-2xl' }, lg.icon),
+            h('div', {},
+              h('h4', { className: 'font-bold text-sm text-slate-200' }, lg.name),
+              h('p', { className: 'text-xs text-slate-400' }, lg.country)
+            )
+          ),
+          h(Icon, { name: 'chevron-right', className: 'w-4 h-4 text-slate-500' })
+        )
+      )
+    )
+  );
+}
+
+function MatchFeedView({ matches, loading, onSelectMatch, filterLiveOnly, setFilterLiveOnly }) {
+  return h('div', { className: 'flex-1 p-4 space-y-3 pb-20' },
+    loading ? h('div', { className: 'flex flex-col items-center justify-center py-20 space-y-3' },
+      h('div', { className: 'w-7 h-7 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin' }),
+      h('p', { className: 'text-xs text-slate-400' }, 'Checking live matches...')
+    ) : matches.length === 0 ? h('div', { className: 'text-center py-20 text-slate-400 text-sm space-y-3' },
+      h('p', {}, filterLiveOnly ? 'No matches match this filter right now.' : 'No matches found.'),
+      filterLiveOnly && h('button', {
+        onClick: () => setFilterLiveOnly(false),
+        className: 'px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl text-slate-200'
+      }, 'View Today\'s Finished/Upcoming Matches')
+    ) : matches.map(m => h('div', {
+      key: m.id,
+      onClick: () => onSelectMatch(m),
+      className: 'bg-[#1e293b]/90 hover:bg-[#1e293b] border border-slate-700/60 rounded-2xl p-3.5 cursor-pointer transition-all shadow'
+    },
+      h('div', { className: 'flex justify-between items-center text-[11px] text-slate-400 mb-2' },
+        h('span', { className: 'font-semibold text-slate-300 uppercase tracking-wide' }, m.league),
+        h('span', { className: `px-2 py-0.5 rounded-full font-bold ${m.status === 'LIVE' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse' : 'bg-slate-800 text-slate-400'}` },
+          m.status === 'LIVE' ? `LIVE ${m.minute}` : m.status
+        )
+      ),
+      h('div', { className: 'space-y-1.5' },
+        h('div', { className: 'flex items-center justify-between' },
+          h('div', { className: 'flex items-center space-x-2.5' },
+            h('img', { src: m.homeLogo, className: 'w-5 h-5 object-contain', onError: e => e.target.style.display = 'none' }),
+            h('span', { className: 'font-semibold text-sm text-slate-200' }, m.homeTeam)
+          ),
+          h('span', { className: 'font-bold text-sm text-slate-100' }, m.homeScore)
+        ),
+        h('div', { className: 'flex items-center justify-between' },
+          h('div', { className: 'flex items-center space-x-2.5' },
+            h('img', { src: m.awayLogo, className: 'w-5 h-5 object-contain', onError: e => e.target.style.display = 'none' }),
+            h('span', { className: 'font-semibold text-sm text-slate-200' }, m.awayTeam)
+          ),
+          h('span', { className: 'font-bold text-sm text-slate-100' }, m.awayScore)
+        )
+      )
+    ))
+  );
+}
+
+function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
+  standings, pollVotes, userVoted, handleVote, totalVotes, ballPos, currentActionText }) {
+  const pct = (n) => (n / totalVotes) * 100;
+  const pollBar = (heightClass) => h('div', { className: `w-full ${heightClass} bg-slate-800 rounded-full overflow-hidden flex` },
+    h('div', { className: 'bg-emerald-500 transition-all duration-500', style: { width: `${pct(pollVotes.home)}%` } }),
+    h('div', { className: 'bg-slate-500 transition-all duration-500', style: { width: `${pct(pollVotes.draw)}%` } }),
+    h('div', { className: 'bg-blue-500 transition-all duration-500', style: { width: `${pct(pollVotes.away)}%` } })
+  );
+
+  return h('div', { className: 'flex-1 flex flex-col bg-[#0b0f19] pb-20' },
+    h('div', { className: 'bg-[#121826] p-4 border-b border-slate-800' },
+      h('button', { onClick: onBack, className: 'flex items-center space-x-1 text-slate-400 hover:text-slate-100 mb-3 text-xs font-medium' },
+        h(Icon, { name: 'arrow-left', className: 'w-4 h-4' }),
+        h('span', {}, 'Back')
+      ),
+      h('div', { className: 'flex justify-between items-center text-center' },
+        h('div', { className: 'flex-1 flex flex-col items-center' },
+          h('img', { src: match.homeLogo, className: 'w-10 h-10 object-contain mb-1.5' }),
+          h('span', { className: 'font-bold text-xs text-slate-100' }, match.homeTeam)
+        ),
+        h('div', { className: 'px-3 flex flex-col items-center' },
+          h('div', { className: 'text-xl font-black tracking-widest text-slate-100' }, `${match.homeScore} - ${match.awayScore}`),
+          h('span', { className: 'text-[11px] text-emerald-400 font-semibold mt-0.5 bg-emerald-500/10 px-2 py-0.5 rounded-full animate-pulse' }, match.status === 'LIVE' ? match.minute : match.status)
+        ),
+        h('div', { className: 'flex-1 flex flex-col items-center' },
+          h('img', { src: match.awayLogo, className: 'w-10 h-10 object-contain mb-1.5' }),
+          h('span', { className: 'font-bold text-xs text-slate-100' }, match.awayTeam)
+        )
+      ),
+      h('div', { className: 'flex justify-around border-t border-slate-800 mt-3 pt-2.5 text-xs font-semibold' },
+        ['facts', 'commentary', 'lineup', 'table', 'stats'].map(tab =>
+          h('button', {
+            key: tab,
+            onClick: () => setMatchTab(tab),
+            className: `capitalize pb-1 border-b-2 transition-all ${matchTab === tab ? 'border-emerald-500 text-emerald-400 font-bold' : 'border-transparent text-slate-400 hover:text-slate-200'}`
+          }, tab)
+        )
+      )
+    ),
+    h('div', { className: 'flex-1 p-4 space-y-4' },
+      matchTab === 'facts' && h('div', { className: 'space-y-4 text-xs' },
+        h('div', { className: 'bg-[#1e293b] p-4 rounded-2xl border border-slate-700/60 space-y-3' },
+          h('h3', { className: 'font-bold text-slate-200 text-sm' }, 'Who will win?'),
+          h('div', { className: 'grid grid-cols-3 gap-2' },
+            h('button', { onClick: () => handleVote('home'), className: `p-2.5 rounded-xl border flex flex-col items-center transition-all ${userVoted === 'home' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
+              h('img', { src: match.homeLogo, className: 'w-6 h-6 object-contain mb-1', onError: e => e.target.style.display = 'none' }),
+              h('span', { className: 'font-bold text-[11px] truncate w-full text-center' }, match.homeTeam),
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.home))}%`)
+            ),
+            h('button', { onClick: () => handleVote('draw'), className: `p-2.5 rounded-xl border flex flex-col items-center justify-center transition-all ${userVoted === 'draw' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
+              h('span', { className: 'font-bold text-xs text-slate-300' }, 'Draw'),
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.draw))}%`)
+            ),
+            h('button', { onClick: () => handleVote('away'), className: `p-2.5 rounded-xl border flex flex-col items-center transition-all ${userVoted === 'away' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
+              h('img', { src: match.awayLogo, className: 'w-6 h-6 object-contain mb-1', onError: e => e.target.style.display = 'none' }),
+              h('span', { className: 'font-bold text-[11px] truncate w-full text-center' }, match.awayTeam),
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.away))}%`)
+            )
+          ),
+          pollBar('h-2'),
+          h('p', { className: 'text-[10px] text-slate-400 text-center' }, `${totalVotes.toLocaleString()} total votes`)
+        ),
+        h('div', { className: 'bg-[#1e293b] p-4 rounded-2xl border border-slate-700/60 space-y-2' },
+          h('h3', { className: 'font-bold text-slate-200 text-sm mb-2' }, 'Match Details'),
+          h('div', { className: 'flex justify-between text-slate-400' }, h('span', {}, 'Stadium'), h('span', { className: 'text-slate-200 font-medium' }, match.venue)),
+          h('div', { className: 'flex justify-between text-slate-400' }, h('span', {}, 'Broadcast'), h('span', { className: 'text-slate-200 font-medium' }, match.broadcast))
+        )
+      ),
+      matchTab === 'commentary' && h('div', { className: 'space-y-4' },
+        h('div', { className: 'bg-[#121826] rounded-2xl p-3 border border-slate-800 shadow-sm space-y-2' },
+          h('div', { className: 'flex justify-between items-center text-xs' },
+            h('span', { className: 'font-bold text-slate-300' }, 'Who will win?'),
+            h('span', { className: 'text-[10px] text-slate-400' }, `${totalVotes.toLocaleString()} votes`)
+          ),
+          h('div', { className: 'grid grid-cols-3 gap-2' },
+            h('button', { onClick: () => handleVote('home'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1.5 transition-all ${userVoted === 'home' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
+              h('img', { src: match.homeLogo, className: 'w-4 h-4 object-contain', onError: e => e.target.style.display = 'none' }),
+              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${Math.round(pct(pollVotes.home))}%`)
+            ),
+            h('button', { onClick: () => handleVote('draw'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1 transition-all ${userVoted === 'draw' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
+              h('span', { className: 'text-xs font-bold text-slate-300' }, 'Draw'),
+              h('span', { className: 'text-xs text-emerald-400 font-bold' }, `${Math.round(pct(pollVotes.draw))}%`)
+            ),
+            h('button', { onClick: () => handleVote('away'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1.5 transition-all ${userVoted === 'away' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
+              h('img', { src: match.awayLogo, className: 'w-4 h-4 object-contain', onError: e => e.target.style.display = 'none' }),
+              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${Math.round(pct(pollVotes.away))}%`)
+            )
+          ),
+          pollBar('h-1.5')
+        ),
+        h('div', { className: 'bg-[#22c55e]/10 rounded-2xl p-2 relative overflow-hidden shadow-xl border border-emerald-500/40' },
+          h('div', { className: 'h-48 bg-gradient-to-r from-[#166534] via-[#15803d] to-[#166534] rounded-xl border border-emerald-400/60 relative overflow-hidden shadow-inner flex flex-col justify-between p-3' },
+            h('div', { className: 'absolute inset-y-0 left-1/2 w-px bg-white/25' }),
+            h('div', { className: 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-14 h-14 rounded-full border border-white/25' }),
+            h('div', { className: 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-white/30' }),
+            h('div', { className: 'absolute inset-y-8 left-0 w-12 border-r border-y border-white/25' }),
+            h('div', { className: 'absolute inset-y-8 right-0 w-12 border-l border-y border-white/25' }),
+            h('div', { className: 'relative z-20 flex justify-between items-center text-[11px] font-bold text-white' },
+              h('div', { className: 'bg-black/40 p-1.5 rounded-lg border border-white/20' },
+                h(Icon, { name: 'maximize-2', className: 'w-3.5 h-3.5' })),
+              h('div', { className: 'bg-black/60 px-3 py-1 rounded-full text-xs font-bold tracking-wide border border-white/20 animate-pulse' }, match.status === 'LIVE' ? match.minute : match.status),
+              h('div', { className: 'bg-black/40 p-1.5 rounded-lg border border-white/20' },
+                h(Icon, { name: 'chevron-up', className: 'w-3.5 h-3.5' }))
+            ),
+            h('svg', { className: 'absolute inset-0 w-full h-full pointer-events-none z-10' },
+              h('path', { d: 'M 100 80 Q 200 40 310 80', fill: 'none', stroke: '#ffffff', strokeWidth: '2', strokeDasharray: '4 4', opacity: '0.6' }),
+              h('circle', {
+                cx: ballPos.x,
+                cy: ballPos.y,
+                r: '8',
+                fill: '#ffffff',
+                stroke: '#000000',
+                strokeWidth: '1.5',
+                className: 'transition-all duration-1000 ease-in-out shadow-lg'
+              })
+            ),
+            h('div', { className: 'absolute top-10 inset-x-4 z-20 flex justify-center' },
+              h('div', { className: 'bg-emerald-950/90 text-emerald-200 px-3 py-1 rounded-full shadow-lg border border-emerald-500/50 text-[11px] font-semibold tracking-wide text-center max-w-[280px] truncate' },
+                currentActionText
+              )
+            ),
+            h('div', { className: 'relative z-20 flex justify-center items-center text-[10px] text-emerald-200 bg-black/40 px-3 py-1 rounded-lg backdrop-blur-sm' },
+              h('span', {}, '● Live Match Feed Active (Real-Time)')
+            )
+          )
+        ),
+        h('div', { className: 'space-y-3' },
+          commentaryList.map((comm, idx) =>
+            h('div', {
+              key: idx,
+              className: 'p-3 rounded-2xl border text-xs bg-[#121826] border-slate-800 text-slate-300'
+            },
+              h('div', { className: 'flex items-center space-x-2 font-bold text-emerald-400 mb-1 text-sm' },
+                h('span', {}, comm.clock?.displayValue || `${idx + 1}'`)
+              ),
+              h('p', { className: 'text-slate-300 leading-relaxed text-xs' }, comm.text)
+            )
+          )
+        )
+      ),
+      matchTab === 'lineup' && h('div', { className: 'text-center py-12 text-slate-400 text-xs' }, 'Lineups update live.'),
+      matchTab === 'stats' && h('div', { className: 'text-center py-12 text-slate-400 text-xs' }, 'Statistics update live during play.'),
+      matchTab === 'table' && h('div', { className: 'space-y-1.5' },
+        h('h3', { className: 'font-bold text-xs text-slate-300 mb-2' }, 'League Standings'),
+        standings.length === 0 ? h('p', { className: 'text-xs text-slate-400 text-center py-8' }, 'Standings not available.') :
+        standings.map((entry, i) =>
+          h('div', { key: i, className: `flex justify-between items-center p-2 rounded-xl text-xs ${entry.team.id === match.homeId || entry.team.id === match.awayId ? 'bg-emerald-500/10 border border-emerald-500/30 font-bold text-slate-100' : 'bg-[#1e293b]/40 text-slate-300'}` },
+            h('div', { className: 'flex items-center space-x-2' },
+              h('span', { className: 'w-4 text-slate-500 text-[11px]' }, i + 1),
+              h('span', {}, entry.team.displayName)
+            ),
+            h('div', { className: 'space-x-3 text-[11px] text-slate-400' },
+              h('span', {}, `${entry.stats.find(s => s.name === 'gamesPlayed')?.displayValue || 0}P`),
+              h('span', { className: 'font-bold text-slate-200' }, `${entry.stats.find(s => s.name === 'points')?.displayValue || 0} PTS`)
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>
