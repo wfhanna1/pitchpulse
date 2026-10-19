@@ -57,8 +57,8 @@ function App() {
   const leaguesList = ['All', 'Premier League', 'UEFA Champions League', 'La Liga', 'Serie A', 'Bundesliga', 'MLS', 'Ligue 1'];
 
   useEffect(() => {
+    let firstLoad = true;
     async function fetchScores() {
-      setLoading(true);
       try {
         const todayStr = new Date().toISOString().slice(0,10).replace(/-/g,'');
         const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates=${todayStr}`);
@@ -88,6 +88,10 @@ function App() {
           };
         });
         setMatches(parsedMatches);
+        if (firstLoad) {
+          firstLoad = false;
+          setFilterLiveOnly(parsedMatches.some(m => m.status === 'LIVE'));
+        }
       } catch (e) {
         console.error('Error fetching scores:', e);
       } finally {
@@ -109,15 +113,7 @@ function App() {
         const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${selectedMatch.id}`);
         const data = await res.json();
         setMatchSummary({ rosters: data.rosters || [], teams: data.boxscore?.teams || [] });
-        if (data.commentary && data.commentary.length > 0) {
-          setCommentaryList(data.commentary.slice().reverse().map(c => ({ clock: c.time, text: c.text })));
-        } else {
-          setCommentaryList([
-            { clock: { displayValue: '1st | 14\'' }, text: `${selectedMatch.homeTeam} player executes a clean short pass in midfield.` },
-            { clock: { displayValue: '1st | 31\'' }, text: `Shot on target! Forward fires a powerful strike forcing a diving save.` },
-            { clock: { displayValue: '1st | 44\'' }, text: `Free kick awarded in the attacking third after a tactical foul.` }
-          ]);
-        }
+        setCommentaryList((data.commentary || []).slice().reverse().map(c => ({ clock: c.time, text: c.text })));
         if (selectedMatch.leagueId) {
           const standRes = await fetch(`https://site.api.espn.com/apis/v2/sports/soccer/${selectedMatch.leagueId}/standings`);
           const standData = await standRes.json();
@@ -125,6 +121,7 @@ function App() {
         }
       } catch (e) {
         console.error('Error fetching details:', e);
+        setMatchSummary({ rosters: [], teams: [] });
       }
     }
     fetchDetails();
@@ -156,7 +153,8 @@ function App() {
   };
   const totalVotes = pollVotes.home + pollVotes.draw + pollVotes.away;
 
-  const filteredMatches = matches.filter(m => {
+  const statusOrder = { LIVE: 0, NS: 1, FT: 2 };
+  const filteredMatches = matches.slice().sort((a, b) => statusOrder[a.status] - statusOrder[b.status]).filter(m => {
     if (filterLiveOnly && m.status !== 'LIVE') return false;
     if (selectedLeague !== 'All' && m.league !== selectedLeague) return false;
     if (searchQuery && !m.homeTeam.toLowerCase().includes(searchQuery.toLowerCase()) && !m.awayTeam.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -426,6 +424,7 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
             )
           )
         ),
+        commentaryList.length === 0 && h(EmptyNote, {}, matchSummary ? 'Commentary is not available yet.' : 'Loading commentary...'),
         h('div', { className: 'space-y-3' },
           commentaryList.map((comm, idx) =>
             h('div', {
