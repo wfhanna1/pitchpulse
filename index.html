@@ -125,8 +125,8 @@ function App() {
       first = false;
     }
     fetchDetails();
-    // live matches: keep events (and the ball) fresh while the match is open
-    const interval = selectedMatch.status === 'LIVE' ? setInterval(fetchDetails, 15000) : null;
+    // live matches: keep events (and the ball) fresh while the match is open; ESPN caches responses for ~8s so polling faster gains nothing
+    const interval = selectedMatch.status === 'LIVE' ? setInterval(fetchDetails, 8000) : null;
     return () => { if (interval) clearInterval(interval); };
   }, [selectedMatch]);
 
@@ -412,7 +412,7 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
               h('line', { x1: ball.x, y1: ball.y, x2: ball.x2, y2: ball.y2, stroke: '#ffffff', strokeWidth: '2', strokeDasharray: '4 4', opacity: '0.7', vectorEffect: 'non-scaling-stroke' })
             ),
             ball && h('div', {
-              className: 'absolute z-10 w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full bg-white border-2 border-black shadow-lg transition-all duration-1000 ease-in-out',
+              className: 'absolute z-10 w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full bg-white border-2 border-black shadow-lg transition-all duration-500 ease-out',
               style: { left: `${ball.x}%`, top: `${ball.y}%` }
             }),
             h('div', { className: 'absolute top-10 inset-x-4 z-20 flex justify-center' },
