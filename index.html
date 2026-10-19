@@ -21,6 +21,17 @@ body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f8fa
 <script>
 const { useState, useEffect, createElement: h } = React;
 
+// ESPN's scoreboard has no league name per match, only an id inside event.uid
+const LEAGUE_BY_ID = {
+  '700': { name: 'Premier League', slug: 'eng.1' },
+  '775': { name: 'UEFA Champions League', slug: 'uefa.champions' },
+  '740': { name: 'La Liga', slug: 'esp.1' },
+  '730': { name: 'Serie A', slug: 'ita.1' },
+  '720': { name: 'Bundesliga', slug: 'ger.1' },
+  '770': { name: 'MLS', slug: 'usa.1' },
+  '710': { name: 'Ligue 1', slug: 'fra.1' }
+};
+
 function Icon({ name, className = "w-5 h-5", color }) {
   useEffect(() => { lucide.createIcons(); }, [name]);
   return h('i', { 'data-lucide': name, className, style: { color } });
@@ -55,10 +66,12 @@ function App() {
           const comp = ev.competitions[0];
           const home = comp.competitors.find(c => c.homeAway === 'home');
           const away = comp.competitors.find(c => c.homeAway === 'away');
+          const leagueId = (ev.uid || '').match(/~l:(\d+)/)?.[1];
+          const known = LEAGUE_BY_ID[leagueId];
           return {
             id: ev.id,
-            league: comp.league?.name || 'Soccer Match',
-            leagueId: comp.league?.id || 'all',
+            league: known?.name || (ev.season?.slug || 'Soccer Match').replace(/^\d{4}(-\d{2})?-/, '').replace(/-/g, ' '),
+            leagueId: known?.slug || null,
             status: ev.status.type.state === 'in' ? 'LIVE' : (ev.status.type.completed ? 'FT' : 'NS'),
             minute: ev.status.displayClock || ev.status.type.detail,
             homeTeam: home.team.displayName,
@@ -87,12 +100,14 @@ function App() {
 
   useEffect(() => {
     if (!selectedMatch) return;
+    setStandings([]);
+    setCommentaryList([]);
     async function fetchDetails() {
       try {
         const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${selectedMatch.id}`);
         const data = await res.json();
-        if (data.plays && data.plays.length > 0) {
-          setCommentaryList(data.plays);
+        if (data.commentary && data.commentary.length > 0) {
+          setCommentaryList(data.commentary.slice().reverse().map(c => ({ clock: c.time, text: c.text })));
         } else {
           setCommentaryList([
             { clock: { displayValue: '1st | 14\'' }, text: `${selectedMatch.homeTeam} player executes a clean short pass in midfield.` },
@@ -103,9 +118,7 @@ function App() {
         if (selectedMatch.leagueId) {
           const standRes = await fetch(`https://site.api.espn.com/apis/v2/sports/soccer/${selectedMatch.leagueId}/standings`);
           const standData = await standRes.json();
-          if (standData.standings) {
-            setStandings(standData.standings[0]?.entries || []);
-          }
+          setStandings(standData.children?.[0]?.standings?.entries || []);
         }
       } catch (e) {
         console.error('Error fetching details:', e);
@@ -142,7 +155,7 @@ function App() {
 
   const filteredMatches = matches.filter(m => {
     if (filterLiveOnly && m.status !== 'LIVE') return false;
-    if (selectedLeague !== 'All' && !m.league.toLowerCase().includes(selectedLeague.toLowerCase())) return false;
+    if (selectedLeague !== 'All' && m.league !== selectedLeague) return false;
     if (searchQuery && !m.homeTeam.toLowerCase().includes(searchQuery.toLowerCase()) && !m.awayTeam.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   });
