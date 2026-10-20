@@ -19,7 +19,7 @@ body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f8fa
 <body class="bg-[#0b0f19] text-slate-100 min-h-screen">
 <div id="root"></div>
 <script>
-const { useState, useEffect, createElement: h } = React;
+const { useState, useEffect, useRef, createElement: h } = React;
 
 // ESPN's scoreboard has no league name per match, only an id inside event.uid
 const LEAGUE_BY_ID = {
@@ -52,10 +52,14 @@ function App() {
   const [pollVotes, setPollVotes] = useState({ home: 1840, draw: 920, away: 1150 });
   const [userVoted, setUserVoted] = useState(null);
 
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const fetchScoresRef = useRef(null);
+  const fetchDetailsRef = useRef(null);
+  const firstLoadRef = useRef(true);
+
   const leaguesList = ['All', 'Premier League', 'UEFA Champions League', 'La Liga', 'Serie A', 'Bundesliga', 'MLS', 'Ligue 1'];
 
   useEffect(() => {
-    let firstLoad = true;
     async function fetchScores() {
       try {
         const todayStr = new Date().toISOString().slice(0,10).replace(/-/g,'');
@@ -86,8 +90,9 @@ function App() {
           };
         });
         setMatches(parsedMatches);
-        if (firstLoad) {
-          firstLoad = false;
+        setLastUpdated(new Date());
+        if (firstLoadRef.current) {
+          firstLoadRef.current = false;
           setFilterLiveOnly(parsedMatches.some(m => m.status === 'LIVE'));
         }
       } catch (e) {
@@ -96,6 +101,7 @@ function App() {
         setLoading(false);
       }
     }
+    fetchScoresRef.current = fetchScores;
     fetchScores();
     const interval = setInterval(fetchScores, 10000);
     return () => clearInterval(interval);
@@ -124,11 +130,32 @@ function App() {
       }
       first = false;
     }
+    fetchDetailsRef.current = fetchDetails;
     fetchDetails();
-    // live matches: keep events (and the ball) fresh while the match is open; ESPN caches responses for ~8s so polling faster gains nothing
-    const interval = selectedMatch.status === 'LIVE' ? setInterval(fetchDetails, 8000) : null;
-    return () => { if (interval) clearInterval(interval); };
+    return () => { fetchDetailsRef.current = null; };
   }, [selectedMatch]);
+
+  // Keep events (and the ball) fresh while a live match is open; ESPN caches responses for ~8s so polling faster gains nothing.
+  // Uses the freshest status from the scoreboard, so it also starts when a match kicks off and does a last fetch at full time.
+  const currentMatch = (selectedMatch && matches.find(m => m.id === selectedMatch.id)) || selectedMatch;
+  const isLive = currentMatch?.status === 'LIVE';
+  const wasLiveRef = useRef(false);
+  useEffect(() => {
+    if (!selectedMatch) { wasLiveRef.current = false; return; }
+    if (!isLive) {
+      if (wasLiveRef.current && fetchDetailsRef.current) fetchDetailsRef.current();
+      wasLiveRef.current = false;
+      return;
+    }
+    wasLiveRef.current = true;
+    const interval = setInterval(() => { if (fetchDetailsRef.current) fetchDetailsRef.current(); }, 8000);
+    return () => clearInterval(interval);
+  }, [selectedMatch, isLive]);
+
+  const refreshNow = () => {
+    if (fetchScoresRef.current) fetchScoresRef.current();
+    if (selectedMatch && fetchDetailsRef.current) fetchDetailsRef.current();
+  };
 
   const handleVote = (teamKey) => {
     if (userVoted) return;
@@ -149,7 +176,10 @@ function App() {
     h('header', { className: 'bg-[#121826] sticky top-0 z-50 px-4 py-3 border-b border-slate-800 flex items-center justify-between' },
       h('div', { className: 'flex items-center space-x-2' },
         h('div', { className: 'w-7 h-7 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-950 text-base' }, 'P'),
-        h('span', { className: 'font-bold text-base text-slate-100 tracking-tight' }, 'PitchPulse')
+        h('div', { className: 'flex flex-col leading-tight' },
+          h('span', { className: 'font-bold text-base text-slate-100 tracking-tight' }, 'PitchPulse'),
+          lastUpdated && h('span', { className: 'text-[10px] text-slate-500' }, `Updated ${lastUpdated.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`)
+        )
       ),
       h('div', { className: 'flex items-center space-x-2' },
         h('button', {
@@ -159,7 +189,7 @@ function App() {
           h('span', { className: `w-2 h-2 rounded-full ${filterLiveOnly ? 'bg-slate-950 animate-pulse' : 'bg-emerald-500'}` }),
           h('span', {}, 'Live Only')
         ),
-        h('button', { onClick: () => window.location.reload(), className: 'p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300' },
+        h('button', { onClick: refreshNow, className: 'p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300' },
           h(Icon, { name: 'refresh-cw', className: 'w-4 h-4' })
         )
       )
@@ -186,7 +216,7 @@ function App() {
       )
     ),
     selectedMatch ? h(MatchCenterView, {
-      match: (selectedMatch && matches.find(m => m.id === selectedMatch.id)) || selectedMatch,
+      match: currentMatch,
       onBack: () => setSelectedMatch(null),
       matchTab, setMatchTab,
       commentaryList, matchSummary, standings, pollVotes, userVoted, handleVote, totalVotes
