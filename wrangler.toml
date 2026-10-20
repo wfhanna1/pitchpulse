@@ -1,0 +1,9 @@
+name = "pitchpulse-poll"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Create the namespace with:  wrangler kv namespace create VOTES
+# then paste the id it prints below.
+[[kv_namespaces]]
+binding = "VOTES"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

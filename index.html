@@ -21,6 +21,9 @@ body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f8fa
 <script>
 const { useState, useEffect, useRef, createElement: h } = React;
 
+// Shared poll server (see worker.js). Leave empty to keep votes on this device only.
+const POLL_API = '';
+
 // ESPN's scoreboard has no league name per match, only an id inside event.uid
 const LEAGUE_BY_ID = {
   '700': { name: 'Premier League', slug: 'eng.1' },
@@ -49,7 +52,7 @@ function App() {
   const [standings, setStandings] = useState([]);
   const [commentaryList, setCommentaryList] = useState([]);
   const [matchSummary, setMatchSummary] = useState(null);
-  const [pollVotes, setPollVotes] = useState({ home: 1840, draw: 920, away: 1150 });
+  const [pollVotes, setPollVotes] = useState({ home: 0, draw: 0, away: 0 });
   const [userVoted, setUserVoted] = useState(null);
 
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -157,10 +160,51 @@ function App() {
     if (selectedMatch && fetchDetailsRef.current) fetchDetailsRef.current();
   };
 
-  const handleVote = (teamKey) => {
-    if (userVoted) return;
-    setPollVotes(prev => ({ ...prev, [teamKey]: prev[teamKey] + 1 }));
+  // Poll: one vote per match. Shared through POLL_API when set, otherwise saved on this device only.
+  const pollMatchId = selectedMatch?.id;
+  useEffect(() => {
+    setPollVotes({ home: 0, draw: 0, away: 0 });
+    setUserVoted(null);
+    if (!pollMatchId) return;
+    let cancelled = false;
+    try {
+      setUserVoted(localStorage.getItem(`pp_vote_${pollMatchId}`));
+      if (!POLL_API) {
+        const saved = JSON.parse(localStorage.getItem(`pp_counts_${pollMatchId}`));
+        if (saved) setPollVotes(saved);
+      }
+    } catch (e) {}
+    async function loadVotes() {
+      try {
+        const res = await fetch(`${POLL_API}/votes?match=${pollMatchId}`);
+        const data = await res.json();
+        if (!cancelled && data.votes) setPollVotes(data.votes);
+      } catch (e) { console.error('Error loading votes:', e); }
+    }
+    let interval = null;
+    if (POLL_API) { loadVotes(); interval = setInterval(loadVotes, 15000); }
+    return () => { cancelled = true; if (interval) clearInterval(interval); };
+  }, [pollMatchId]);
+
+  const handleVote = async (teamKey) => {
+    if (userVoted || !pollMatchId) return;
     setUserVoted(teamKey);
+    try { localStorage.setItem(`pp_vote_${pollMatchId}`, teamKey); } catch (e) {}
+    if (POLL_API) {
+      try {
+        const res = await fetch(`${POLL_API}/vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ match: pollMatchId, choice: teamKey })
+        });
+        const data = await res.json();
+        if (data.votes) setPollVotes(data.votes);
+      } catch (e) { console.error('Error sending vote:', e); }
+    } else {
+      const next = { ...pollVotes, [teamKey]: pollVotes[teamKey] + 1 };
+      setPollVotes(next);
+      try { localStorage.setItem(`pp_counts_${pollMatchId}`, JSON.stringify(next)); } catch (e) {}
+    }
   };
   const totalVotes = pollVotes.home + pollVotes.draw + pollVotes.away;
 
@@ -337,7 +381,9 @@ function recentBallEvents(commentaryList, match, count) {
 
 function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList, matchSummary,
   standings, pollVotes, userVoted, handleVote, totalVotes }) {
-  const pct = (n) => (n / totalVotes) * 100;
+  const pct = (n) => (totalVotes > 0 ? (n / totalVotes) * 100 : 0);
+  const pctText = (n) => (totalVotes > 0 ? `${Math.round(pct(n))}%` : '–');
+  const voteNote = totalVotes > 0 ? `${totalVotes.toLocaleString()} ${totalVotes === 1 ? 'vote' : 'votes'}` : 'Be the first to vote';
   const recent = recentBallEvents(commentaryList, match, 5);
   const ball = recent[0] || null;
   const trail = recent.slice(1);
@@ -387,20 +433,20 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
             h('button', { onClick: () => handleVote('home'), className: `p-2.5 rounded-xl border flex flex-col items-center transition-all ${userVoted === 'home' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
               h('img', { src: match.homeLogo, className: 'w-6 h-6 object-contain mb-1', onError: e => e.target.style.display = 'none' }),
               h('span', { className: 'font-bold text-[11px] truncate w-full text-center' }, match.homeTeam),
-              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.home))}%`)
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${pctText(pollVotes.home)}`)
             ),
             h('button', { onClick: () => handleVote('draw'), className: `p-2.5 rounded-xl border flex flex-col items-center justify-center transition-all ${userVoted === 'draw' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
               h('span', { className: 'font-bold text-xs text-slate-300' }, 'Draw'),
-              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.draw))}%`)
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${pctText(pollVotes.draw)}`)
             ),
             h('button', { onClick: () => handleVote('away'), className: `p-2.5 rounded-xl border flex flex-col items-center transition-all ${userVoted === 'away' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#121826] border-slate-700/60 hover:bg-slate-800'}` },
               h('img', { src: match.awayLogo, className: 'w-6 h-6 object-contain mb-1', onError: e => e.target.style.display = 'none' }),
               h('span', { className: 'font-bold text-[11px] truncate w-full text-center' }, match.awayTeam),
-              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${Math.round(pct(pollVotes.away))}%`)
+              h('span', { className: 'text-emerald-400 font-bold mt-1' }, `${pctText(pollVotes.away)}`)
             )
           ),
           pollBar('h-2'),
-          h('p', { className: 'text-[10px] text-slate-400 text-center' }, `${totalVotes.toLocaleString()} total votes`)
+          h('p', { className: 'text-[10px] text-slate-400 text-center' }, POLL_API ? voteNote : `${voteNote} · saved on this device only`)
         ),
         h('div', { className: 'bg-[#1e293b] p-4 rounded-2xl border border-slate-700/60 space-y-2' },
           h('h3', { className: 'font-bold text-slate-200 text-sm mb-2' }, 'Match Details'),
@@ -412,20 +458,20 @@ function MatchCenterView({ match, onBack, matchTab, setMatchTab, commentaryList,
         h('div', { className: 'bg-[#121826] rounded-2xl p-3 border border-slate-800 shadow-sm space-y-2' },
           h('div', { className: 'flex justify-between items-center text-xs' },
             h('span', { className: 'font-bold text-slate-300' }, 'Who will win?'),
-            h('span', { className: 'text-[10px] text-slate-400' }, `${totalVotes.toLocaleString()} votes`)
+            h('span', { className: 'text-[10px] text-slate-400' }, voteNote)
           ),
           h('div', { className: 'grid grid-cols-3 gap-2' },
             h('button', { onClick: () => handleVote('home'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1.5 transition-all ${userVoted === 'home' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
               h('img', { src: match.homeLogo, className: 'w-4 h-4 object-contain', onError: e => e.target.style.display = 'none' }),
-              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${Math.round(pct(pollVotes.home))}%`)
+              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${pctText(pollVotes.home)}`)
             ),
             h('button', { onClick: () => handleVote('draw'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1 transition-all ${userVoted === 'draw' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
               h('span', { className: 'text-xs font-bold text-slate-300' }, 'Draw'),
-              h('span', { className: 'text-xs text-emerald-400 font-bold' }, `${Math.round(pct(pollVotes.draw))}%`)
+              h('span', { className: 'text-xs text-emerald-400 font-bold' }, `${pctText(pollVotes.draw)}`)
             ),
             h('button', { onClick: () => handleVote('away'), className: `p-2 rounded-xl border flex items-center justify-center space-x-1.5 transition-all ${userVoted === 'away' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-[#1e293b] border-slate-700/60 hover:bg-slate-800'}` },
               h('img', { src: match.awayLogo, className: 'w-4 h-4 object-contain', onError: e => e.target.style.display = 'none' }),
-              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${Math.round(pct(pollVotes.away))}%`)
+              h('span', { className: 'text-xs font-bold text-emerald-400' }, `${pctText(pollVotes.away)}`)
             )
           ),
           pollBar('h-1.5')
