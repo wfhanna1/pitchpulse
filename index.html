@@ -35,6 +35,13 @@ const LEAGUE_BY_ID = {
   '710': { name: 'Ligue 1', slug: 'fra.1' }
 };
 
+// Fallback when ESPN's league list is unavailable: season slugs like 'regular-season' say nothing about the league
+const GENERIC_SLUGS = ['regular season', 'group stage', 'final stage', 'clausura', 'apertura', 'torneo clausura', 'torneo apertura'];
+function slugToLeagueName(slug) {
+  const name = (slug || '').replace(/^\d{4}(-\d{2})?-/, '').replace(/-/g, ' ');
+  return !name || GENERIC_SLUGS.includes(name) ? 'Other league' : name;
+}
+
 function Icon({ name, className = "w-5 h-5", color }) {
   useEffect(() => { lucide.createIcons(); }, [name]);
   return h('i', { 'data-lucide': name, className, style: { color } });
@@ -56,6 +63,7 @@ function App() {
   const [userVoted, setUserVoted] = useState(null);
 
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [leagueNames, setLeagueNames] = useState({});
   const fetchScoresRef = useRef(null);
   const fetchDetailsRef = useRef(null);
   const firstLoadRef = useRef(true);
@@ -76,8 +84,9 @@ function App() {
           const known = LEAGUE_BY_ID[leagueId];
           return {
             id: ev.id,
-            league: known?.name || (ev.season?.slug || 'Soccer Match').replace(/^\d{4}(-\d{2})?-/, '').replace(/-/g, ' '),
+            league: known?.name || slugToLeagueName(ev.season?.slug),
             leagueId: known?.slug || null,
+            leagueNum: leagueId,
             status: ev.status.type.state === 'in' ? 'LIVE' : (ev.status.type.completed ? 'FT' : 'NS'),
             minute: ev.status.displayClock || ev.status.type.detail,
             homeTeam: home.team.displayName,
@@ -107,6 +116,24 @@ function App() {
     fetchScoresRef.current = fetchScores;
     fetchScores();
     const interval = setInterval(fetchScores, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ESPN's header feed lists every competition on today's schedule with its proper name
+  useEffect(() => {
+    async function loadLeagueNames() {
+      try {
+        const res = await fetch('https://site.web.api.espn.com/apis/v2/scoreboard/header?sport=soccer&lang=en&region=us');
+        const data = await res.json();
+        const names = {};
+        (data.sports?.[0]?.leagues || []).forEach(l => { if (l.id && l.name) names[l.id] = l.name; });
+        setLeagueNames(names);
+      } catch (e) {
+        console.error('Error loading league names:', e);
+      }
+    }
+    loadLeagueNames();
+    const interval = setInterval(loadLeagueNames, 30 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -209,7 +236,9 @@ function App() {
   const totalVotes = pollVotes.home + pollVotes.draw + pollVotes.away;
 
   const statusOrder = { LIVE: 0, NS: 1, FT: 2 };
-  const filteredMatches = matches.slice().sort((a, b) => statusOrder[a.status] - statusOrder[b.status]).filter(m => {
+  // The seven main leagues keep their short names; every other league uses ESPN's name for it
+  const namedMatches = matches.map(m => (LEAGUE_BY_ID[m.leagueNum] || !leagueNames[m.leagueNum]) ? m : { ...m, league: leagueNames[m.leagueNum] });
+  const filteredMatches = namedMatches.slice().sort((a, b) => statusOrder[a.status] - statusOrder[b.status]).filter(m => {
     if (filterLiveOnly && m.status !== 'LIVE') return false;
     if (selectedLeague !== 'All' && m.league !== selectedLeague) return false;
     if (searchQuery && !m.homeTeam.toLowerCase().includes(searchQuery.toLowerCase()) && !m.awayTeam.toLowerCase().includes(searchQuery.toLowerCase())) return false;
